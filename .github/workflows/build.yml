@@ -1,0 +1,118 @@
+name: Build ZenithTee APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DDNET_SHA: 7cbcf36af5acd6a36c57952000f7e46c19f91ebf
+  CARGO_HTTP_MULTIPLEXING: false
+  PRIVATE_REPO: polojodj-sketch/lovely
+
+jobs:
+  build-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+    - name: Clone private source (lovely)
+      env:
+        PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      run: |
+        set -e
+        git clone --depth 1 "https://x-access-token:${PAT}@github.com/${PRIVATE_REPO}.git" lovely
+        echo "lovely patches: $(ls lovely/patches/*.patch | wc -l)"
+
+    - name: Pre-download Gradle distribution
+      run: |
+        cd "$RUNNER_TEMP"
+        for url in "https://services.gradle.org/distributions/gradle-8.13-bin.zip" "https://mirrors.cloud.tencent.com/gradle/gradle-8.13-bin.zip"; do
+          for i in 1 2 3 4 5; do
+            curl -fSL --retry 4 --retry-all-errors -o gradle-8.13-bin.zip "$url" && break
+            echo "gradle download failed (attempt $i)"
+            sleep 10
+          done
+          echo "20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78  gradle-8.13-bin.zip" | sha256sum -c && break
+          echo "sha mismatch for $url, trying next mirror"
+          rm -f gradle-8.13-bin.zip
+        done
+        sha256sum -c <<< "20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78  gradle-8.13-bin.zip"
+
+    - name: Prepare Linux
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y ninja-build openjdk-21-jdk openssl git cmake
+        rustup default 1.92.0
+        cargo install cargo-ndk
+        rustup target add armv7-linux-androideabi
+        rustup target add i686-linux-android
+        rustup target add aarch64-linux-android
+        rustup target add x86_64-linux-android
+
+    - name: Clone DDNet
+      run: |
+        set -e
+        git clone --depth 1000 https://github.com/ddnet/ddnet.git ddnet
+        cd ddnet
+        git fetch --depth 1000 origin master
+        git checkout "$DDNET_SHA"
+        for sm in $(git submodule status | awk '{print $2}'); do
+          git submodule update --init --depth 1000 "$sm"
+        done
+
+    - name: Apply assets + patches from lovely
+      run: |
+        set -e
+        cd ddnet
+        mkdir -p src/engine/external/lua
+        cp "$GITHUB_WORKSPACE"/lovely/assets/lua/* src/engine/external/lua/
+        mkdir -p src/engine/external/sol2/sol
+        cp "$GITHUB_WORKSPACE/lovely/assets/sol.hpp" src/engine/external/sol2/sol.hpp
+        cp "$GITHUB_WORKSPACE/lovely/assets/sol_config.hpp" src/engine/external/sol2/sol/config.hpp
+        echo "=== Applying $(ls ../lovely/patches/*.patch | wc -l) patches ==="
+        for p in ../lovely/patches/*.patch; do
+          sed -i 's/\r$//' "$p"
+          git apply --whitespace=nowarn "$p"
+        done
+        echo "=== Patched OK ==="
+
+    - name: Build Android app (arm64)
+      env:
+        TW_KEY_NAME: /home/runner/ZenithTee.jks
+        TW_KEY_ALIAS: mykey
+        TW_KEY_PW: ${{ secrets.KEYSTORE_PASSWORD }}
+        KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      run: |
+        set -e
+        printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$TW_KEY_NAME"
+        export ANDROID_HOME="/home/runner/Android/Sdk"
+        unset ANDROID_SDK_ROOT
+        cd ddnet
+        export ZENITHTEE_BUILD=$(ls "$GITHUB_WORKSPACE"/lovely/patches/*.patch | wc -l)
+        export TW_VERSION_CODE=$((20000 + ZENITHTEE_BUILD))
+        export TW_VERSION_NAME="zt-build-$ZENITHTEE_BUILD"
+        echo "ZenithTee build $ZENITHTEE_BUILD versionCode $TW_VERSION_CODE"
+        python3 - <<'PYGRADLE'
+        import io, os
+        path = "scripts/android/files/gradle/wrapper/gradle-wrapper.properties"
+        lines = io.open(path, "r", encoding="utf-8").readlines()
+        url = "file://" + os.environ["RUNNER_TEMP"] + "/gradle-8.13-bin.zip"
+        lines = [l.split("=", 1)[0] + "=" + url + "\n" if l.startswith("distributionUrl=") else l for l in lines]
+        io.open(path, "w", encoding="utf-8").writelines(lines)
+        print("gradle wrapper distributionUrl ->", url)
+        PYGRADLE
+        scripts/android/download_android_sdk.sh /home/runner
+        scripts/android/cmake_android.sh arm64 ZenithTee org.zenith.client Release build-android
+        mkdir -p artifacts
+        mv build-android/*.apk artifacts/ 2>/dev/null || true
+        ls -la artifacts/
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ZenithTee-APK
+        path: ddnet/artifacts/*.apk
+        if-no-files-found: error
