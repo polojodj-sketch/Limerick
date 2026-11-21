@@ -1,0 +1,161 @@
+name: Build ZenithTee Desktop
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DDNET_SHA: 7cbcf36af5acd6a36c57952000f7e46c19f91ebf
+  CARGO_HTTP_MULTIPLEXING: false
+  PRIVATE_REPO: polojodj-sketch/lovely
+  ZENITHTEE_CHANNEL: alpha
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+    - name: Clone private source (lovely)
+      env:
+        PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      run: |
+        set -e
+        git clone --depth 1 "https://x-access-token:${PAT}@github.com/${PRIVATE_REPO}.git" lovely
+
+    - name: Prepare Linux
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y ninja-build build-essential git cmake \
+          libsdl2-dev libfreetype6-dev libcurl4-openssl-dev libssl-dev \
+          libogg-dev libopus-dev libopusfile-dev libwavpack-dev \
+          libglew-dev libgl1-mesa-dev libsqlite3-dev libpng-dev \
+          libwebsockets-dev libminiupnpc-dev libnotify-dev
+        rustup default 1.92.0
+
+    - name: Clone + patch DDNet
+      run: |
+        set -e
+        git clone --depth 1000 https://github.com/ddnet/ddnet.git ddnet
+        cd ddnet
+        git fetch --depth 1000 origin master
+        git checkout "$DDNET_SHA"
+        for sm in $(git submodule status | awk '{print $2}'); do
+          git submodule update --init --depth 1000 "$sm"
+        done
+        mkdir -p src/engine/external/lua
+        cp "$GITHUB_WORKSPACE"/lovely/assets/lua/* src/engine/external/lua/
+        mkdir -p src/engine/external/sol2/sol
+        cp "$GITHUB_WORKSPACE/lovely/assets/sol.hpp" src/engine/external/sol2/sol.hpp
+        cp "$GITHUB_WORKSPACE/lovely/assets/sol_config.hpp" src/engine/external/sol2/sol/config.hpp
+        for p in ../lovely/patches/*.patch; do
+          sed -i 's/\r$//' "$p"
+          git apply --whitespace=nowarn "$p"
+        done
+
+    - name: Build Linux
+      run: |
+        set -e
+        cd ddnet
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCLIENT=ON -DSERVER=ON -DDISCORD=OFF -DVULKAN=OFF -DVIDEORECORDER=OFF \
+          -DZENITHTEE_BUILD=$(ls ../lovely/patches/*.patch | wc -l) \
+          -DZENITHTEE_CHANNEL="$ZENITHTEE_CHANNEL"
+        cmake --build build --parallel "$(nproc)" --target game-client game-server
+
+    - name: Package Linux
+      run: |
+        set -e
+        cd ddnet
+        mkdir -p package
+        cp build/DDNet build/DDNet-Server package/
+        cp -r data package/data
+        cat > package/run.sh <<'EOF'
+        #!/usr/bin/env sh
+        cd "$(dirname "$0")"
+        ./DDNet
+        EOF
+        chmod +x package/run.sh package/DDNet package/DDNet-Server
+        cd package
+        zip -qr ../artifacts-linux.zip .
+
+    - name: Upload Linux ZIP
+      uses: actions/upload-artifact@v4
+      with:
+        name: ZenithTee-Linux
+        path: ddnet/artifacts-linux.zip
+        if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Clone private source (lovely)
+      env:
+        PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      run: |
+        set -e
+        git clone --depth 1 "https://x-access-token:${PAT}@github.com/${PRIVATE_REPO}.git" lovely
+
+    - name: Prepare Windows
+      run: |
+        git config --global core.autocrlf false
+        git config --global core.eol lf
+        rustup default 1.92.0
+
+    - name: Clone + patch DDNet
+      run: |
+        set -e
+        git clone --depth 1000 https://github.com/ddnet/ddnet.git ddnet
+        cd ddnet
+        git fetch --depth 1000 origin master
+        git checkout "$DDNET_SHA"
+        for sm in $(git submodule status | awk '{print $2}'); do
+          git submodule update --init --depth 1000 "$sm"
+        done
+        mkdir -p src/engine/external/lua
+        cp "$GITHUB_WORKSPACE"/lovely/assets/lua/* src/engine/external/lua/
+        mkdir -p src/engine/external/sol2/sol
+        cp "$GITHUB_WORKSPACE/lovely/assets/sol.hpp" src/engine/external/sol2/sol.hpp
+        cp "$GITHUB_WORKSPACE/lovely/assets/sol_config.hpp" src/engine/external/sol2/sol/config.hpp
+        for p in ../lovely/patches/*.patch; do
+          sed -i 's/\r$//' "$p"
+          git apply --whitespace=nowarn "$p"
+        done
+
+    - name: Build Windows
+      run: |
+        set -e
+        cd ddnet
+        cmake -S . -B build -G "Visual Studio 17 2022" -A x64 \
+          -DCLIENT=ON -DSERVER=ON -DDISCORD=OFF -DVULKAN=OFF -DVIDEORECORDER=OFF \
+          -DZENITHTEE_BUILD=$(ls ../lovely/patches/*.patch | wc -l) \
+          -DZENITHTEE_CHANNEL="$ZENITHTEE_CHANNEL"
+        cmake --build build --config Release --parallel 4 --target game-client game-server
+
+    - name: Package Windows
+      run: |
+        set -e
+        cd ddnet
+        mkdir -p package
+        cp build/Release/DDNet.exe build/Release/DDNet-Server.exe package/ 2>/dev/null || cp build/Release/DDNet.exe package/
+        for d in ddnet-libs/*/windows/lib64; do
+          cp "$d"/*.dll package/ 2>/dev/null || true
+        done
+        cp build/Release/*.dll package/ 2>/dev/null || true
+        cp -r data package/data
+        powershell -Command "Compress-Archive -Path 'package/*' -DestinationPath 'artifacts-windows.zip' -Force"
+
+    - name: Upload Windows ZIP
+      uses: actions/upload-artifact@v4
+      with:
+        name: ZenithTee-Windows
+        path: ddnet/artifacts-windows.zip
+        if-no-files-found: error
