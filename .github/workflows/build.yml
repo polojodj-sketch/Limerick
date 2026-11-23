@@ -12,6 +12,8 @@ env:
   DDNET_SHA: 7cbcf36af5acd6a36c57952000f7e46c19f91ebf
   CARGO_HTTP_MULTIPLEXING: false
   PRIVATE_REPO: polojodj-sketch/lovely
+  RELEASE_REPO: polojodj-sketch/zenithtee-client-dist
+  ZENITHTEE_CHANNEL: alpha
 
 jobs:
   build-android:
@@ -116,3 +118,21 @@ jobs:
         name: ZenithTee-APK
         path: ddnet/artifacts/*.apk
         if-no-files-found: error
+
+    - name: Publish to private releases
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      env:
+        GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+      run: |
+        set -e
+        cd ddnet/artifacts
+        APK_FILE=$(ls *.apk | head -1)
+        BUILD=$(ls "$GITHUB_WORKSPACE"/lovely/patches/*.patch | wc -l)
+        SHA256=$(sha256sum "$APK_FILE" | cut -d' ' -f1)
+        SIZE=$(stat -c%s "$APK_FILE")
+        TAG="apk-latest"
+        RELEASE_URL="https://github.com/${RELEASE_REPO}/releases/download/${TAG}"
+        MANIFEST='{"schema":1,"channel":"'"${ZENITHTEE_CHANNEL}"'","build":'"${BUILD}"',"platform":"android","url":"'"${RELEASE_URL}/${APK_FILE}"'","size":'"${SIZE}"',"sha256":"'"${SHA256}"'"}'
+        echo "$MANIFEST" > "version-android.json"
+        gh release create "$TAG" "$APK_FILE" "version-android.json" --repo "${RELEASE_REPO}" --title "ZenithTee Android b${BUILD}" --notes "Build ${BUILD} (${ZENITHTEE_CHANNEL})" --prerelease --force 2>/dev/null || gh release upload "$TAG" "$APK_FILE" "version-android.json" --repo "${RELEASE_REPO}" --clobber
+        echo "Published to ${RELEASE_REPO}@${TAG}"
