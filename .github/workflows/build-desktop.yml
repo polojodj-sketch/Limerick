@@ -13,6 +13,8 @@ env:
   CARGO_HTTP_MULTIPLEXING: false
   PRIVATE_REPO: polojodj-sketch/lovely
   ZENITHTEE_CHANNEL: alpha
+  RELEASE_REPO: polojodj-sketch/zenithtee-client-dist
+  RELEASE_TAG: desktop-latest
 
 jobs:
   build-linux:
@@ -90,6 +92,34 @@ jobs:
         path: ddnet/artifacts-linux.zip
         if-no-files-found: error
 
+    - name: Publish Linux to private releases
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      env:
+        GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+      run: |
+        set -e
+        cd ddnet
+        BUILD=$(ls "$GITHUB_WORKSPACE"/lovely/patches/*.patch | wc -l)
+        TAG="${RELEASE_TAG}"
+        RELEASE_URL="https://github.com/${RELEASE_REPO}/releases/download/${TAG}"
+        
+        # Ensure release exists (idempotent)
+        if ! gh release view "$TAG" --repo "${RELEASE_REPO}" >/dev/null 2>&1; then
+          echo '{"schema":1,"channel":"'"${ZENITHTEE_CHANNEL}"'","build":'"${BUILD}"',"platform":"placeholder","url":"","size":0,"sha256":""}' > version-placeholder.json
+          gh release create "$TAG" version-placeholder.json --repo "${RELEASE_REPO}" --title "ZenithTee Desktop b${BUILD}" --notes "Build ${BUILD} (${ZENITHTEE_CHANNEL})" --prerelease
+          rm version-placeholder.json
+        fi
+        
+        if [ -f artifacts-linux.zip ]; then
+          SHA256_LINUX=$(sha256sum artifacts-linux.zip | cut -d' ' -f1)
+          SIZE_LINUX=$(stat -c%s artifacts-linux.zip)
+          MANIFEST_LINUX='{"schema":1,"channel":"'"${ZENITHTEE_CHANNEL}"'","build":'"${BUILD}"',"platform":"linux","url":"'"${RELEASE_URL}/ZenithTee-linux-${BUILD}.zip"'","size":'"${SIZE_LINUX}"',"sha256":"'"${SHA256_LINUX}"'"}'
+          echo "$MANIFEST_LINUX" > "version-linux.json"
+          cp artifacts-linux.zip "ZenithTee-linux-${BUILD}.zip"
+          gh release upload "$TAG" "ZenithTee-linux-${BUILD}.zip" "version-linux.json" --repo "${RELEASE_REPO}" --clobber
+          echo "Published Linux to ${RELEASE_REPO}@${TAG}"
+        fi
+
   build-windows:
     runs-on: windows-2022
     timeout-minutes: 90
@@ -160,39 +190,24 @@ jobs:
         path: ddnet/artifacts-windows.zip
         if-no-files-found: error
 
-    - name: Publish to private releases
+    - name: Publish Windows to private releases
       if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
       env:
         GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
       run: |
         set -e
-        TAG="desktop-latest"
-        RELEASE_REPO="polojodj-sketch/zenithtee-client-dist"
-        RELEASE_URL="https://github.com/${RELEASE_REPO}/releases/download/${TAG}"
-        
         cd ddnet
         BUILD=$(ls "$GITHUB_WORKSPACE"/lovely/patches/*.patch | wc -l)
+        TAG="${RELEASE_TAG}"
+        RELEASE_URL="https://github.com/${RELEASE_REPO}/releases/download/${TAG}"
         
         # Ensure release exists (idempotent)
         if ! gh release view "$TAG" --repo "${RELEASE_REPO}" >/dev/null 2>&1; then
-          # Create a minimal placeholder release; real assets will be uploaded below
           echo '{"schema":1,"channel":"'"${ZENITHTEE_CHANNEL}"'","build":'"${BUILD}"',"platform":"placeholder","url":"","size":0,"sha256":""}' > version-placeholder.json
           gh release create "$TAG" version-placeholder.json --repo "${RELEASE_REPO}" --title "ZenithTee Desktop b${BUILD}" --notes "Build ${BUILD} (${ZENITHTEE_CHANNEL})" --prerelease
           rm version-placeholder.json
         fi
         
-        # Linux
-        if [ -f artifacts-linux.zip ]; then
-          SHA256_LINUX=$(sha256sum artifacts-linux.zip | cut -d' ' -f1)
-          SIZE_LINUX=$(stat -c%s artifacts-linux.zip)
-          MANIFEST_LINUX='{"schema":1,"channel":"'"${ZENITHTEE_CHANNEL}"'","build":'"${BUILD}"',"platform":"linux","url":"'"${RELEASE_URL}/ZenithTee-linux-${BUILD}.zip"'","size":'"${SIZE_LINUX}"',"sha256":"'"${SHA256_LINUX}"'"}'
-          echo "$MANIFEST_LINUX" > "version-linux.json"
-          cp artifacts-linux.zip "ZenithTee-linux-${BUILD}.zip"
-          gh release upload "$TAG" "ZenithTee-linux-${BUILD}.zip" "version-linux.json" --repo "${RELEASE_REPO}" --clobber
-          echo "Published Linux to ${RELEASE_REPO}@${TAG}"
-        fi
-        
-        # Windows
         if [ -f artifacts-windows.zip ]; then
           SHA256_WIN=$(sha256sum artifacts-windows.zip | cut -d' ' -f1)
           SIZE_WIN=$(stat -c%s artifacts-windows.zip)
