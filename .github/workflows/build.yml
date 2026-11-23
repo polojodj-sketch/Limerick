@@ -134,5 +134,9 @@ jobs:
         RELEASE_URL="https://github.com/${RELEASE_REPO}/releases/download/${TAG}"
         MANIFEST='{"schema":1,"channel":"'"${ZENITHTEE_CHANNEL}"'","build":'"${BUILD}"',"platform":"android","url":"'"${RELEASE_URL}/${APK_FILE}"'","size":'"${SIZE}"',"sha256":"'"${SHA256}"'"}'
         echo "$MANIFEST" > "version-android.json"
-        gh release create "$TAG" "$APK_FILE" "version-android.json" --repo "${RELEASE_REPO}" --title "ZenithTee Android b${BUILD}" --notes "Build ${BUILD} (${ZENITHTEE_CHANNEL})" --prerelease --force 2>/dev/null || gh release upload "$TAG" "$APK_FILE" "version-android.json" --repo "${RELEASE_REPO}" --clobber
+        if gh release view "$TAG" --repo "${RELEASE_REPO}" >/dev/null 2>&1; then
+          gh release upload "$TAG" "$APK_FILE" "version-android.json" --repo "${RELEASE_REPO}" --clobber
+        else
+          gh release create "$TAG" "$APK_FILE" "version-android.json" --repo "${RELEASE_REPO}" --title "ZenithTee Android b${BUILD}" --notes "Build ${BUILD} (${ZENITHTEE_CHANNEL})" --prerelease
+        fi
         echo "Published to ${RELEASE_REPO}@${TAG}"
