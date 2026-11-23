@@ -159,3 +159,41 @@ jobs:
         name: ZenithTee-Windows
         path: ddnet/artifacts-windows.zip
         if-no-files-found: error
+
+    - name: Publish to private releases
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      env:
+        GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+      run: |
+        set -e
+        TAG="desktop-latest"
+        RELEASE_REPO="polojodj-sketch/zenithtee-client-dist"
+        RELEASE_URL="https://github.com/${RELEASE_REPO}/releases/download/${TAG}"
+        
+        # Linux
+        cd ddnet
+        BUILD=$(ls "$GITHUB_WORKSPACE"/lovely/patches/*.patch | wc -l)
+        if [ -f artifacts-linux.zip ]; then
+          SHA256_LINUX=$(sha256sum artifacts-linux.zip | cut -d' ' -f1)
+          SIZE_LINUX=$(stat -c%s artifacts-linux.zip)
+          MANIFEST_LINUX='{"schema":1,"channel":"'"${ZENITHTEE_CHANNEL}"'","build":'"${BUILD}"',"platform":"linux","url":"'"${RELEASE_URL}/ZenithTee-linux-${BUILD}.zip"'","size":'"${SIZE_LINUX}"',"sha256":"'"${SHA256_LINUX}"'"}'
+          echo "$MANIFEST_LINUX" > "version-linux.json"
+          cp artifacts-linux.zip "ZenithTee-linux-${BUILD}.zip"
+          if gh release view "$TAG" --repo "${RELEASE_REPO}" >/dev/null 2>&1; then
+            gh release upload "$TAG" "ZenithTee-linux-${BUILD}.zip" "version-linux.json" --repo "${RELEASE_REPO}" --clobber
+          else
+            gh release create "$TAG" "ZenithTee-linux-${BUILD}.zip" "version-linux.json" --repo "${RELEASE_REPO}" --title "ZenithTee Desktop b${BUILD}" --notes "Build ${BUILD} (${ZENITHTEE_CHANNEL})" --prerelease
+          fi
+          echo "Published Linux to ${RELEASE_REPO}@${TAG}"
+        fi
+        
+        # Windows
+        if [ -f artifacts-windows.zip ]; then
+          SHA256_WIN=$(sha256sum artifacts-windows.zip | cut -d' ' -f1)
+          SIZE_WIN=$(stat -c%s artifacts-windows.zip)
+          MANIFEST_WIN='{"schema":1,"channel":"'"${ZENITHTEE_CHANNEL}"'","build":'"${BUILD}"',"platform":"windows","url":"'"${RELEASE_URL}/ZenithTee-windows-${BUILD}.zip"'","size":'"${SIZE_WIN}"',"sha256":"'"${SHA256_WIN}"'"}'
+          echo "$MANIFEST_WIN" > "version-windows.json"
+          cp artifacts-windows.zip "ZenithTee-windows-${BUILD}.zip"
+          gh release upload "$TAG" "ZenithTee-windows-${BUILD}.zip" "version-windows.json" --repo "${RELEASE_REPO}" --clobber
+          echo "Published Windows to ${RELEASE_REPO}@${TAG}"
+        fi
